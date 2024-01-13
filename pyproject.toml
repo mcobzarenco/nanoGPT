@@ -1,0 +1,27 @@
+[project]
+name = "nanoGPT"
+version = "0.1.0"
+requires-python = "==3.11.*"
+readme = "README.md"
+license = { text = "MIT" }
+
+dependencies = [
+    "torch>=2.1.2",
+    "numpy>=1.26.3",
+    "tiktoken>=0.5.2",
+    "datasets>=2.16.1",
+    "tqdm>=4.66.1",
+    "wandb>=0.16.2",
+]
+
+[tool.pdm]
+package-type = "application"
+
+[tool.pdm.scripts]
+prepare-the-pile = { shell = "python data/thepile/prepare.py" }
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pyright>=1.1.345",
+    "ipython>=8.20.0",
+]
