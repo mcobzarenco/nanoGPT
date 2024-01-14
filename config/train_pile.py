@@ -15,9 +15,9 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 
 # these make the total batch size be ~0.5M
 # 32 batch size * 1024 block size * 2 gradaccum * 8 GPUs = 524,288
-batch_size = 64
+batch_size = 32
 block_size = 1024
-gradient_accumulation_steps = 1 * 8
+gradient_accumulation_steps = 2 * 8
 
 # this makes total number of tokens be 150B
 max_iters = 300000
