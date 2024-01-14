@@ -7,17 +7,17 @@ wandb_project = 'latte'
 wandb_run_name=''
 
 # model
-n_layer = 24
-n_head = 32
-n_embd = 2048
+n_layer = 16
+n_head = 16
+n_embd = 1024
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 
 # these make the total batch size be ~1M
-# 16 batch size * 2048 block size * 4 gradaccum * 8 GPUs = 1,048,576
-batch_size = 16
+# 32 batch size * 2048 block size * 2 gradaccum * 8 GPUs = 1,048,576
+batch_size = 32
 block_size = 2048
-gradient_accumulation_steps = 4 * 8
+gradient_accumulation_steps = 2 * 8
 
 # this makes total number of tokens be 300B
 max_iters = 300000
