@@ -20,7 +20,7 @@ def tokenize(example: dict[str, Any]):
 
 def main() -> None:
     current_working_dir = Path(__file__).parents[0]
-    pile_path = current_working_dir / "pile-sample.jsonl"
+    pile_path = current_working_dir / "01.jsonl"
     num_cpus = os.cpu_count()
 
     dataset = Dataset.from_generator(
