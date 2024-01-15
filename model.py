@@ -6,6 +6,7 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+from __future__ import annotations
 
 import math
 import inspect
@@ -75,6 +76,84 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
+
+class CausalLatentAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        # regularization
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.dropout = config.dropout
+
+    def forward_big(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        q_scale = 1.0 / math.sqrt(q.size(-1))
+        q_softmax = F.softmax(q * q_scale, dim=-1) # (B, nh, T, hs)
+
+        k_scale = 1.0 / math.sqrt(k.size(-1))
+        k_exp = (k.transpose(-2, -1) * k_scale).exp() # (B, nh, hs, T)
+        k_norm = k_exp.cumsum(dim=-1) # cumsum over T
+
+        kv_exp = torch.einsum("bnst,bntd->bnstd", k_exp, v) # (B, nh, hs, T, hs)
+        kv = kv_exp.cumsum(dim=-2) / (k_norm.unsqueeze(-1) + 1e-5)  # cumsum over t
+
+        y = torch.einsum("bnts,bnstd->btnd", q_softmax, kv) # (B, T, nh, hs)
+        y = y.contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # output projection
+        y = self.resid_dropout(self.c_proj(y))
+
+        return y
+
+    def forward(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        q_scale = 1.0 / math.sqrt(q.size(-1))
+        q_softmax = F.softmax(q * q_scale, dim=-1) # (B, nh, T, hs)
+
+        k_scale = 1.0 / math.sqrt(k.size(-1))
+        k_exp = (k.transpose(-2, -1) * k_scale).exp() # (B, nh, hs, T)
+        k_norm = k_exp.cumsum(dim=-1) # cumsum over T
+
+        # y = torch.zeros((B, self.n_head, T, C // self.n_head), device=q.device) # (B, nh, T, hs)
+        y = []
+        acc = torch.zeros((B, self.n_head, C // self.n_head, C // self.n_head), device=q.device) # (B, nh, hs, hs)
+        for t in range(T):
+            # y[:, :, t, :] = k_exp[:, :, :, :t+1] @ v[:, : :t+1, :]
+            acc = acc + k_exp[:, :, :, t:t+1] @ v[:, :, t:t+1, :]
+            # y[:, :, t:t+1, :] = q_softmax[:, :, t:t+1, :] @ (acc / k_norm[:, :, :, t:t+1])
+            y.append(q_softmax[:, :, t:t+1, :] @ (acc / k_norm[:, :, :, t:t+1]))
+
+        y = torch.concatenate(y, dim=-2)
+        # y = y.view(B, T, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # output projection
+        y = self.resid_dropout(self.c_proj(y))
+
+        return y
+
+
 class MLP(nn.Module):
 
     def __init__(self, config):
@@ -92,11 +171,14 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
+        if config.latte:
+            self.attn = CausalLatentAttention(config)
+        else:
+            self.attn = CausalSelfAttention(config)
+
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -104,6 +186,7 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
 
 @dataclass
 class GPTConfig:
@@ -114,9 +197,10 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    latte: bool = False # True: use latent attention
+
 
 class GPT(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         assert config.vocab_size is not None
